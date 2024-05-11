@@ -14,4 +14,5 @@ sleep 1
 aplay -D plughw:CARD=vsnd,DEV=0 CantinaBand3.wav
 sudo rmmod vsnd
 
+ls -l out.pcm
 ffmpeg -f s16le -ar 22.05k -ac 1 -loglevel 8 -i out.pcm out.wav

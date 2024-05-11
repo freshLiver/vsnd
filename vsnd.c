@@ -7,6 +7,8 @@
 #include <sound/initval.h>
 #include <sound/pcm.h>
 
+#include <linux/errname.h>
+
 #define BITS_PER_BYTE 8
 
 #define DRIVER_NAME "vsnd"
@@ -206,6 +208,8 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
     char *src_data = pcm_data->substream->runtime->dma_area;
     unsigned int src_off = pcm_data->buf_pos;
     unsigned int delta = 0, bytes_to_write, byte_left_to_write;
+    int ret;
+    // int retry_limit = 100;
 
     if (running) {
         delta = jiffies - pcm_data->last_jiffies;
@@ -222,7 +226,22 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
         unsigned int size = byte_left_to_write;
         if (src_off + size > pcm_data->pcm_buffer_size)
             size = pcm_data->pcm_buffer_size - src_off;
-        kernel_write(vsnd->fifo_fp, src_data + src_off, size, NULL);
+    again:
+        ret = kernel_write(vsnd->fifo_fp, src_data + src_off, size, NULL);
+        if (ret < 0) {
+            // if (ret == -EAGAIN && retry_limit--) {
+            //     goto again;
+            // }
+            #ifndef errname
+            pr_err("kernel_write: failed: %d", ret);
+            #else errname
+            pr_err("kernel_write: failed: %s", errname(ret));
+            #endif
+        } else if (ret < size) {
+            pr_warn("kernel_write: expect write %d, but %d", size, ret);
+        } else {
+            pr_info("%d bytes written", ret);
+        }
         byte_left_to_write -= size;
         src_off = (src_off + size) % pcm_data->pcm_buffer_size;
     } while (byte_left_to_write > 0);
@@ -348,6 +367,8 @@ static int vsnd_open(struct snd_pcm_substream *substream)
         err = -EIO;
         goto finally;
     }
+    pr_info("FIFO file %s opened", out_fifo_name[dev_id]);
+    // dump_stack();
     vsnd->fifo_fp = fifo_fp;
 
     /* Set PCM data */
@@ -386,6 +407,8 @@ static int vsnd_close(struct snd_pcm_substream *substream)
     mutex_lock(&vsnd->lock);
     if (vsnd->fifo_fp) {
         filp_close(vsnd->fifo_fp, NULL);
+        pr_info("FIFO file closed");
+        // dump_stack();
         vsnd->fifo_fp = NULL;
     }
     mutex_unlock(&vsnd->lock);
@@ -435,6 +458,8 @@ static int vsnd_trigger(struct snd_pcm_substream *substream, int cmd)
     struct vsnd_pcm *pcm_data = runtime->private_data;
     struct vsnd *vsnd = pcm_data->vsnd;
     int err = 0;
+
+    pr_info("Triggered");
 
     switch (cmd) {
     case SNDRV_PCM_TRIGGER_START:
