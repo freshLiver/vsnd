@@ -206,6 +206,7 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
     char *src_data = pcm_data->substream->runtime->dma_area;
     unsigned int src_off = pcm_data->buf_pos;
     unsigned int delta = 0, bytes_to_write, byte_left_to_write;
+    ssize_t ret;
 
     if (running) {
         delta = jiffies - pcm_data->last_jiffies;
@@ -222,7 +223,11 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
         unsigned int size = byte_left_to_write;
         if (src_off + size > pcm_data->pcm_buffer_size)
             size = pcm_data->pcm_buffer_size - src_off;
-        kernel_write(vsnd->fifo_fp, src_data + src_off, size, NULL);
+        ret = kernel_write(vsnd->fifo_fp, src_data + src_off, size, NULL);
+        if (ret < 0)
+            pr_err("kernel_write failed: %ld", ret);
+        else if (ret != size)
+            pr_warn("kernel_write expect write %u, but %ld", size, ret);
         byte_left_to_write -= size;
         src_off = (src_off + size) % pcm_data->pcm_buffer_size;
     } while (byte_left_to_write > 0);
@@ -328,13 +333,14 @@ static int vsnd_open(struct snd_pcm_substream *substream)
     struct vsnd_pcm *pcm_data;
     int dev_id = substream->pcm->device;
     void *fifo_fp;
-    int err = 0;
+    int err = 0, oflags = O_WRONLY | O_NONBLOCK;
 
     /* Create and configure PCM data structures */
     pcm_data = kzalloc(sizeof(*pcm_data), GFP_KERNEL);
     if (!pcm_data)
         return -ENOMEM;
 
+    pr_info("open by %d", current->pid);
     mutex_lock(&vsnd->lock);
 
     /* Open FIFO output file (writable only by us but readable by everyone else)
@@ -342,9 +348,17 @@ static int vsnd_open(struct snd_pcm_substream *substream)
     /* CAUTION: We need to open this FIFO pipe as for both read-write as opening
      * for write-only will cause 'flip_close()' to crash.
      */
-    fifo_fp = filp_open(out_fifo_name[dev_id], O_RDWR | O_NONBLOCK, 0);
+retry:
+    fifo_fp = filp_open(out_fifo_name[dev_id], oflags, 0);
     if (IS_ERR(fifo_fp)) {
-        pr_err("Failed to open FIFO file.");
+        if (PTR_ERR(fifo_fp) == -ENXIO && (oflags & O_WRONLY)) {
+            pr_warn("no reader. (pid=%d)", current->pid);
+            oflags = O_RDWR | O_NONBLOCK;
+            goto retry;
+            // err = -ENXIO;
+            // goto finally;
+        }
+        pr_err("Failed to open FIFO file. (pid=%d)", current->pid);
         err = -EIO;
         goto finally;
     }
