@@ -216,6 +216,11 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
     if (delta == 0)
         goto finally;
 
+    if (!vsnd->fifo_fp) {
+        pr_info("no reader no writes: %d",
+                pcm_data->substream->pid->numbers[0].nr);
+        goto finally;
+    }
     pr_info("updated by: %d", pcm_data->substream->pid->numbers[0].nr);
 
     bytes_to_write = vsnd_pos_calc(pcm_data, delta);
@@ -352,14 +357,13 @@ static int vsnd_open(struct snd_pcm_substream *substream)
      */
     fifo_fp = filp_open(out_fifo_name[dev_id], O_WRONLY | O_NONBLOCK, 0);
     if (IS_ERR(fifo_fp)) {
-        if (PTR_ERR(fifo_fp) == -ENXIO) {
-            pr_warn("no reader. (pid=%d)", current->pid);
-            err = -ENXIO;
+        if (PTR_ERR(fifo_fp) != -ENXIO) {
+            pr_err("Failed to open FIFO file. (pid=%d)", current->pid);
+            err = -EIO;
             goto finally;
         }
-        pr_err("Failed to open FIFO file. (pid=%d)", current->pid);
-        err = -EIO;
-        goto finally;
+        pr_warn("no reader. (pid=%d)", current->pid);
+        fifo_fp = NULL;
     }
     vsnd->fifo_fp = fifo_fp;
 

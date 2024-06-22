@@ -9,7 +9,6 @@ rm -f /tmp/audio.pcm
 mkfifo /tmp/audio.pcm
 sudo insmod vsnd.ko out_fifo_name=/tmp/audio.pcm
 
-sleep 1
 tee out.pcm < /tmp/audio.pcm >/dev/null &
 aplay -D plughw:CARD=vsnd,DEV=0 CantinaBand3.wav
 sudo rmmod vsnd
