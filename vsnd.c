@@ -15,6 +15,7 @@
 #define DEFAULT_PCM_FREQ 22050
 #define DEFAULT_PCM_RATE SNDRV_PCM_RATE_22050
 #define DEFAULT_PCM_CHANNELS 1
+#define DEFAULT_PCM_SUBSTREAMS 2
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -85,7 +86,7 @@ struct vsnd {
     spinlock_t spin_lock;
     struct snd_pcm *pcm;
     struct vsnd_setup setup;
-    void *fifo_fp;
+    void *fifo_fp[DEFAULT_PCM_SUBSTREAMS];
     unsigned int running : 1;
     unsigned int paused : 1;
 };
@@ -207,6 +208,7 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
     unsigned int src_off = pcm_data->buf_pos;
     unsigned int delta = 0, bytes_to_write, byte_left_to_write;
     ssize_t ret;
+    void *fifo_fp = vsnd->fifo_fp[pcm_data->substream->number];
 
     if (running) {
         delta = jiffies - pcm_data->last_jiffies;
@@ -216,7 +218,7 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
     if (delta == 0)
         goto finally;
 
-    if (!vsnd->fifo_fp) {
+    if (!fifo_fp) {
         pr_info("no reader no writes: %d",
                 pcm_data->substream->pid->numbers[0].nr);
         goto finally;
@@ -230,7 +232,7 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
         unsigned int size = byte_left_to_write;
         if (src_off + size > pcm_data->pcm_buffer_size)
             size = pcm_data->pcm_buffer_size - src_off;
-        ret = kernel_write(vsnd->fifo_fp, src_data + src_off, size, NULL);
+        ret = kernel_write(fifo_fp, src_data + src_off, size, NULL);
         if (ret < 0)
             pr_err("kernel_write failed: %ld", ret);
         else if (ret != size)
@@ -284,7 +286,7 @@ static int vsnd_probe(struct platform_device *devptr)
     struct snd_card *card;
     struct vsnd *vsnd;
     struct snd_pcm *pcm;
-    int err;
+    int err, i;
 
     err = snd_devm_card_new(&devptr->dev, index[devptr->id], id[devptr->id],
                             THIS_MODULE, sizeof(struct vsnd), &card);
@@ -306,7 +308,8 @@ static int vsnd_probe(struct platform_device *devptr)
     vsnd->card = card;
 
     /* Then create a new PCM stream and attach it to this card */
-    err = snd_pcm_new(card, PCM_NAME, devptr->id, 1, 0, &pcm);
+    err = snd_pcm_new(card, PCM_NAME, devptr->id, DEFAULT_PCM_SUBSTREAMS, 0,
+                      &pcm);
     if (err < 0) {
         pr_err("Failed to create a new PCM stream for soundcard.");
         return err;
@@ -327,7 +330,8 @@ static int vsnd_probe(struct platform_device *devptr)
 
     platform_set_drvdata(devptr, card);
 
-    vsnd->fifo_fp = NULL;
+    for (i = 0; i < DEFAULT_PCM_SUBSTREAMS; ++i)
+        vsnd->fifo_fp[i] = NULL;
     vsnd->running = vsnd->paused = 0;
 
     return 0;
@@ -362,10 +366,12 @@ static int vsnd_open(struct snd_pcm_substream *substream)
             err = -EIO;
             goto finally;
         }
-        pr_warn("no reader. (pid=%d)", current->pid);
+        pr_warn("substream[%d]: No reader (pid=%d) skip writes",
+                substream->number, current->pid);
         fifo_fp = NULL;
     }
-    vsnd->fifo_fp = fifo_fp;
+    pr_warn("substream[%d]: open done pid=%d", substream->number, current->pid);
+    vsnd->fifo_fp[substream->number] = fifo_fp;
 
     /* Set PCM data */
     pcm_data->vsnd = vsnd;
@@ -401,9 +407,9 @@ static int vsnd_close(struct snd_pcm_substream *substream)
     vsnd_timer_delete(pcm_data, 1);
 
     mutex_lock(&vsnd->lock);
-    if (vsnd->fifo_fp) {
-        filp_close(vsnd->fifo_fp, NULL);
-        vsnd->fifo_fp = NULL;
+    if (vsnd->fifo_fp[substream->number]) {
+        filp_close(vsnd->fifo_fp[substream->number], NULL);
+        vsnd->fifo_fp[substream->number] = NULL;
     }
     mutex_unlock(&vsnd->lock);
 
