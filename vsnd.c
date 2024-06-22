@@ -216,6 +216,8 @@ static unsigned int vsnd_pos_update(struct vsnd_pcm *pcm_data)
     if (delta == 0)
         goto finally;
 
+    pr_info("updated by: %d", pcm_data->substream->pid->numbers[0].nr);
+
     bytes_to_write = vsnd_pos_calc(pcm_data, delta);
     byte_left_to_write = bytes_to_write;
 
@@ -333,7 +335,7 @@ static int vsnd_open(struct snd_pcm_substream *substream)
     struct vsnd_pcm *pcm_data;
     int dev_id = substream->pcm->device;
     void *fifo_fp;
-    int err = 0, oflags = O_WRONLY | O_NONBLOCK;
+    int err = 0;
 
     /* Create and configure PCM data structures */
     pcm_data = kzalloc(sizeof(*pcm_data), GFP_KERNEL);
@@ -348,15 +350,12 @@ static int vsnd_open(struct snd_pcm_substream *substream)
     /* CAUTION: We need to open this FIFO pipe as for both read-write as opening
      * for write-only will cause 'flip_close()' to crash.
      */
-retry:
-    fifo_fp = filp_open(out_fifo_name[dev_id], oflags, 0);
+    fifo_fp = filp_open(out_fifo_name[dev_id], O_WRONLY | O_NONBLOCK, 0);
     if (IS_ERR(fifo_fp)) {
-        if (PTR_ERR(fifo_fp) == -ENXIO && (oflags & O_WRONLY)) {
+        if (PTR_ERR(fifo_fp) == -ENXIO) {
             pr_warn("no reader. (pid=%d)", current->pid);
-            oflags = O_RDWR | O_NONBLOCK;
-            goto retry;
-            // err = -ENXIO;
-            // goto finally;
+            err = -ENXIO;
+            goto finally;
         }
         pr_err("Failed to open FIFO file. (pid=%d)", current->pid);
         err = -EIO;
